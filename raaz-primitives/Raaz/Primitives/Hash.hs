@@ -40,11 +40,13 @@ import           Raaz.Util.SecureMemory
 
 class ( SafePrimitive h
       , HasPadding h
-      , Default (IV h)
       , CryptoPrimitive h
       , Eq h
       , CryptoStore h
+      , Default  (IV h)
+      , Storable (IV h)
       ) => Hash h where
+  hashToIV :: h -> IV h
 
 -- | Hash a given byte source.
 sourceHash' :: ( ByteSource src
