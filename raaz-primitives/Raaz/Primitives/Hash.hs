@@ -10,7 +10,7 @@ A cryptographic hash function abstraction.
 
 module Raaz.Primitives.Hash
        ( Hash
-       -- , HMAC(..)
+       , HMAC(..)
        , sourceHash', sourceHash
        , hash', hash
        , hashFile', hashFile
@@ -119,7 +119,7 @@ hashFile :: Hash h
 hashFile fp = withBinaryFile fp ReadMode sourceHash
 {-# INLINEABLE hashFile #-}
 
-{-
+
 -- | The HMAC associated to a hash value. The `Eq` instance for HMAC
 -- is essentially the `Eq` instance for the underlying hash and hence
 -- is safe against timing attack (provided the underlying hashs --
@@ -130,17 +130,49 @@ newtype HMAC h = HMAC h deriving (Eq, Storable, CryptoStore)
 getHash :: HMAC h -> h
 getHash _ = undefined
 
+
 instance Primitive h => Primitive (HMAC h) where
-  blockSize = blockSize . getHash
-  -- | Stores inner and outer pad
-  newtype IV (HMAC h) = HMACSecret B.ByteString
+  blockSize           = blockSize . getHash
+  newtype IV (HMAC h) = HMACKey (IV h) (IV h)
+
+instance SafePrimitive h => SafePrimitive (HMAC h)
+
+
+{-
+
+Developers notes
+----------------
+
+The computation of hmac for a message is as follows.
+
+hmac = hash (outer-pad + hash ( innerpad + message) )
+
+Therefore the padding instance will have to deal with the extra 1
+block of inner pad
+
+-}
+
+
+instance HasPadding h => HasPadding (HMAC h) where
+
+  padLength hmac bits = padLength h bits'
+    where h     = getHash hmac
+          bits' = bits + cryptoCoerce (blocksOf 1 hmac)
+
+  padding hmac bits = padding h bits'
+    where h     = getHash hmac
+          bits' = bits + cryptoCoerce (blocksOf 1 hmac)
+
+  unsafePad hmac bits = unsafePad h bits'
+    where h     = getHash hmac
+          bits' = bits + cryptoCoerce (blocksOf 1 hmac)
+
+  maxAdditionalBlocks  = toEnum . fromEnum
+                       . maxAdditionalBlocks
+                       . getHash
+
 
 newtype HMACBuffer p = HMACBuffer ForeignCryptoPtr deriving Eq
-
-data Gadget g => HMACGadget g =
-  HMACGadget g (HMACBuffer (PrimitiveOf g))
-
-
 
 instance (Primitive p, CryptoStore p) => Memory (HMACBuffer p) where
   newMemory = allocMem undefined
@@ -164,11 +196,11 @@ instance (Primitive p, CryptoStore p) => Memory (HMACBuffer p) where
      allocSec p = fmap HMACBuffer . allocSecureMem'
                     (cryptoCoerce (size p) :: BYTES Int)
 
-instance HashGadget g => Gadget (HMACGadget g) where
+instance Gadget g => Gadget (HMAC g) where
 
-  type PrimitiveOf (HMACGadget g) = HMAC (PrimitiveOf g)
+  type PrimitiveOf (HMAC g) = HMAC (PrimitiveOf g)
 
-  type MemoryOf (HMACGadget g) = (MemoryOf g, HMACBuffer (PrimitiveOf g))
+  type MemoryOf (HMAC g) = (MemoryOf g, HMACBuffer (PrimitiveOf g))
 
   newGadget (gmem,hbuff) = do
     g <- newGadget gmem
@@ -200,8 +232,6 @@ instance HashGadget g => Gadget (HMACGadget g) where
   apply (HMACGadget g _) blks = apply g blks'
     where blks' = toEnum $ fromEnum blks
 
-instance (HashGadget g) => SafeGadget (HMACGadget g)
-
 -- instance (CryptoPrimitive p, PrimitiveOf (HMACGadget (Recommended p)) ~ HMAC p)
 --          => CryptoPrimitive (HMAC p) where
 --   type Recommended (HMAC p) = HMACGadget (Recommended p)
@@ -219,21 +249,6 @@ instance (HashGadget g) => SafeGadget (HMACGadget g)
 -- additional block of data arising out of the concatination of k1 in
 -- front of the message.
 
-instance HasPadding h => HasPadding (HMAC h) where
-
-  padLength hmac bits = padLength h bits'
-    where h     = getHash hmac
-          bits' = bits + cryptoCoerce (blocksOf 1 hmac)
-
-  padding hmac bits = padding h bits'
-    where h     = getHash hmac
-          bits' = bits + cryptoCoerce (blocksOf 1 hmac)
-
-  unsafePad hmac bits = unsafePad h bits'
-    where h     = getHash hmac
-          bits' = bits + cryptoCoerce (blocksOf 1 hmac)
-
-  maxAdditionalBlocks  = toEnum . fromEnum . maxAdditionalBlocks . getHash
 
 initHMAC :: HashGadget g
          => HMACGadget g
