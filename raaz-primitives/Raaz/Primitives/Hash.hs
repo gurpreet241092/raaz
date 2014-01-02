@@ -171,40 +171,56 @@ instance HasPadding h => HasPadding (HMAC h) where
                        . maxAdditionalBlocks
                        . getHash
 
-
+-- | Additional buffer required for computing the HMAC.
 newtype HMACBuffer p = HMACBuffer ForeignCryptoPtr deriving Eq
+
+-- | Computes the length of the intermediate buffer required to hash
+-- the hash.
+--
+hmacBufLen :: ( HasPadding  p
+              , CryptoStore p
+              )
+           => p -> BYTES Int
+hmacBufLen p = pad + byteSize p
+  where outerPadLen :: BITS Word64
+        hashSize    :: BITS Word64
+        -- In the last step on needs to hash the outerPad with the
+        -- actual hash. Therefore the input length is outerPadLen (1
+        -- block) + hashSize.
+        outerPadLen = cryptoCoerce $ blocksOf 1 p
+        hashSize    = cryptoCoerce $ byteSize p
+        pad         = padLength (outerPadLen + hashSize)
 
 instance (Primitive p, CryptoStore p) => Memory (HMACBuffer p) where
   newMemory = allocMem undefined
-    where
-      allocMem :: (Primitive p, CryptoStore p) => p -> IO (HMACBuffer p)
-      allocMem p = let BYTES len = cryptoCoerce $ size p
-                   in fmap HMACBuffer $ mallocForeignPtrBytes len
-      size :: (Primitive p, CryptoStore p) => p -> BLOCKS p
-      size p = blocksOf 1 p + cryptoCoerce (BYTES $ sizeOf p)
+    where allocMem :: (Primitive p, CryptoStore p)
+                   => p
+                   -> IO (HMACBuffer p)
+          allocMem p = fmap HMACBuffer $ mallocForeignPtrBytes len
+            where BYTES len = hmacBufLen p
 
   freeMemory (HMACBuffer fptr) = finalizeForeignPtr fptr
   withSecureMemory f bk = allocSec undefined bk >>= f
-   where
-     -- Assuming Blocks are always word aligned
-     size :: (Primitive p, CryptoStore p) => p -> BLOCKS p
-     size p = blocksOf 1 p + cryptoCoerce (BYTES $ sizeOf p)
-     allocSec :: (Primitive p, CryptoStore p)
-              => p
-              -> BookKeeper
-              -> IO (HMACBuffer p)
-     allocSec p = fmap HMACBuffer . allocSecureMem'
-                    (cryptoCoerce (size p) :: BYTES Int)
+   where allocSec :: (Primitive p, CryptoStore p)
+                  => p
+                  -> BookKeeper
+                  -> IO (HMACBuffer p)
+     allocSec p = fmap HMACBuffer . allocSecureMem' (hmacBufLen p)
+
+{-
 
 instance Gadget g => Gadget (HMAC g) where
 
   type PrimitiveOf (HMAC g) = HMAC (PrimitiveOf g)
 
-  type MemoryOf (HMAC g) = (MemoryOf g, HMACBuffer (PrimitiveOf g))
+  type MemoryOf (HMAC g) = ( MemoryOf g -- after hashing innerpad
+                           , MemoryOf g -- after hashing outer pad
+                           , HMACBuffer (PrimitiveOf g)
+                           )
 
   newGadget (gmem,hbuff) = do
     g <- newGadget gmem
-    return $ HMACGadget g hbuff
+    return $ HMAC g hbuff
 
   initialize (HMACGadget g hbuff) (HMACSecret bs)  = do
     initialize g def
